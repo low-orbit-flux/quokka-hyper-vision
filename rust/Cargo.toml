@@ -1,0 +1,9 @@
+[package]
+name = "camera1"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iced = { version = "0.13", features = ["image", "tokio"] }
+nokhwa = { version = "0.10", features = ["input-v4l"] }
+tokio = { version = "1", features = ["full"] }
