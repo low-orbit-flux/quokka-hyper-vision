@@ -11,6 +11,7 @@ with itemconfig(), which is both stable and fast.
 from __future__ import annotations
 
 import tkinter as tk
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -19,16 +20,26 @@ import customtkinter as ctk
 
 from ..processors import Pipeline
 
+if TYPE_CHECKING:
+    from ..detector import ObjectDetector
+
 _PLACEHOLDER = "← Select a camera to start streaming"
 _PLACEHOLDER_COLOUR = "#6b6b6b"
 
 
 class VideoPanel(ctk.CTkFrame):
-    def __init__(self, master, pipeline: Pipeline, **kwargs) -> None:
+    def __init__(
+        self,
+        master,
+        pipeline: Pipeline,
+        detector: "ObjectDetector | None" = None,
+        **kwargs,
+    ) -> None:
         kwargs.setdefault("corner_radius", 8)
         super().__init__(master, **kwargs)
 
         self._pipeline = pipeline
+        self._detector = detector
         self._panel_w: int = 1
         self._panel_h: int = 1
         self._photo: ImageTk.PhotoImage | None = None   # MUST stay alive
@@ -75,8 +86,16 @@ class VideoPanel(ctk.CTkFrame):
         if self._panel_w < 4 or self._panel_h < 4:
             return
 
-        # Run through CV processor pipeline (no-op by default; add CV later).
+        # Run through CV processor pipeline (no-op by default).
         frame = self._pipeline.run(bgr_frame)
+
+        # Object detection: submit frame, draw latest results.
+        if self._detector is not None and self._detector.enabled:
+            self._detector.submit(frame)
+            detections = self._detector.latest()
+            if detections:
+                frame = frame.copy()          # don't mutate the original
+                self._detector.draw(frame, detections)
 
         # BGR → RGB, scale to fit panel preserving aspect ratio.
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

@@ -1,5 +1,5 @@
 """
-Left sidebar: camera list + status + refresh button.
+Left sidebar: camera list + status + refresh button + detection toggle.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ class Sidebar(ctk.CTkFrame):
         master,
         on_camera_selected: Callable[[CameraInfo], None],
         on_refresh: Callable[[], None],
+        on_detection_toggle: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("width", 220)
@@ -25,6 +26,7 @@ class Sidebar(ctk.CTkFrame):
 
         self._on_camera_selected = on_camera_selected
         self._on_refresh = on_refresh
+        self._on_detection_toggle = on_detection_toggle
         self._buttons: list[tuple[CameraInfo, ctk.CTkButton]] = []
         self._selected_index: int | None = None
 
@@ -72,7 +74,26 @@ class Sidebar(ctk.CTkFrame):
             text="Refresh",
             command=self._on_refresh,
             height=32,
-        ).grid(row=3, column=0, padx=12, pady=(4, 12), sticky="ew")
+        ).grid(row=3, column=0, padx=12, pady=(4, 4), sticky="ew")
+
+        # ── detection section ────────────────────────────────────────────────
+        ctk.CTkLabel(
+            self,
+            text="Detection",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=4, column=0, padx=14, pady=(10, 2), sticky="ew")
+
+        self._detect_btn = ctk.CTkButton(
+            self,
+            text="⬤  Detection: OFF",
+            command=self._on_detection_toggle,
+            height=32,
+            fg_color=("gray75", "gray30"),
+            hover_color=("gray65", "gray40"),
+            text_color=("gray30", "gray80"),
+        )
+        self._detect_btn.grid(row=5, column=0, padx=12, pady=(0, 12), sticky="ew")
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -115,6 +136,33 @@ class Sidebar(ctk.CTkFrame):
                 btn.configure(fg_color=("gray75", "gray25"), border_width=0)
             else:
                 btn.configure(fg_color="transparent", border_width=1)
+
+    def set_detection_state(self, state: str) -> None:
+        """
+        Update detection button appearance.
+        state: "off" | "loading" | "on"
+        """
+        if state == "on":
+            self._detect_btn.configure(
+                text="⬤  Detection: ON",
+                fg_color=("#2d6a2d", "#2d8c2d"),
+                hover_color=("#255525", "#257025"),
+                text_color="white",
+            )
+        elif state == "loading":
+            self._detect_btn.configure(
+                text="◌  Loading model…",
+                fg_color=("#7a6000", "#a07800"),
+                hover_color=("#7a6000", "#a07800"),
+                text_color="white",
+            )
+        else:  # off
+            self._detect_btn.configure(
+                text="⬤  Detection: OFF",
+                fg_color=("gray75", "gray30"),
+                hover_color=("gray65", "gray40"),
+                text_color=("gray30", "gray80"),
+            )
 
     # ── internal ──────────────────────────────────────────────────────────────
 

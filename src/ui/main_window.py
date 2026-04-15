@@ -1,6 +1,6 @@
 """
 MainWindow – root CTk window, owns the camera manager, processor pipeline,
-sidebar, and video panel.
+object detector, sidebar, and video panel.
 
 Frame-poll loop
 ---------------
@@ -11,6 +11,14 @@ Every POLL_MS milliseconds the `_poll` method runs on the GUI thread:
 
 Camera enumeration runs on a background thread to avoid freezing the UI;
 results are delivered back to the GUI thread via after(0, callback).
+
+Detection toggle
+----------------
+Clicking the sidebar button calls _toggle_detection().
+  - First press:  starts model load in a background thread (button → "Loading…")
+  - Model ready:  inference thread starts (button → "ON")
+  - Second press: inference stops (button → "OFF")
+Model stays in memory once loaded so subsequent enable/disable is instant.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from typing import Optional
 import customtkinter as ctk
 
 from ..camera_manager import CameraInfo, CameraManager
+from ..detector import ObjectDetector
 from ..processors import Pipeline
 from .sidebar import Sidebar
 from .video_panel import VideoPanel
@@ -37,6 +46,7 @@ class MainWindow(ctk.CTk):
 
         self._camera = CameraManager()
         self._pipeline = Pipeline()
+        self._detector = ObjectDetector()
         self._poll_id: Optional[str] = None
 
         self._build_layout()
@@ -56,10 +66,15 @@ class MainWindow(ctk.CTk):
             self,
             on_camera_selected=self._on_camera_selected,
             on_refresh=self._enumerate_cameras,
+            on_detection_toggle=self._toggle_detection,
         )
         self._sidebar.grid(row=0, column=0, padx=(8, 4), pady=8, sticky="ns")
 
-        self._video = VideoPanel(self, pipeline=self._pipeline)
+        self._video = VideoPanel(
+            self,
+            pipeline=self._pipeline,
+            detector=self._detector,
+        )
         self._video.grid(row=0, column=1, padx=(4, 8), pady=8, sticky="nsew")
 
     # ── camera enumeration ────────────────────────────────────────────────────
@@ -89,6 +104,25 @@ class MainWindow(ctk.CTk):
         self._sidebar.highlight(cam.index)
         self._camera.start(cam.index)
 
+    # ── detection toggle ──────────────────────────────────────────────────────
+
+    def _toggle_detection(self) -> None:
+        if self._detector.loading:
+            return  # ignore clicks while model is loading
+
+        if self._detector.enabled:
+            self._detector.disable()
+            self._sidebar.set_detection_state("off")
+        else:
+            self._sidebar.set_detection_state("loading")
+            self._detector.enable(
+                on_ready=lambda: self.after(0, self._on_detector_ready)
+            )
+
+    def _on_detector_ready(self) -> None:
+        """Called on the GUI thread once the model is loaded and running."""
+        self._sidebar.set_detection_state("on")
+
     # ── frame poll loop ───────────────────────────────────────────────────────
 
     def _start_poll(self) -> None:
@@ -111,5 +145,6 @@ class MainWindow(ctk.CTk):
     def _on_close(self) -> None:
         if self._poll_id is not None:
             self.after_cancel(self._poll_id)
+        self._detector.disable()
         self._camera.stop()
         self.destroy()
