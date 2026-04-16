@@ -18,6 +18,8 @@ class Sidebar(ctk.CTkFrame):
         on_camera_selected: Callable[[CameraInfo], None],
         on_refresh: Callable[[], None],
         on_detection_toggle: Callable[[], None] | None = None,
+        on_face_toggle: Callable[[], None] | None = None,
+        on_plate_toggle: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("width", 220)
@@ -27,6 +29,8 @@ class Sidebar(ctk.CTkFrame):
         self._on_camera_selected = on_camera_selected
         self._on_refresh = on_refresh
         self._on_detection_toggle = on_detection_toggle
+        self._on_face_toggle = on_face_toggle
+        self._on_plate_toggle = on_plate_toggle
         self._buttons: list[tuple[CameraInfo, ctk.CTkButton]] = []
         self._selected_index: int | None = None
 
@@ -93,7 +97,45 @@ class Sidebar(ctk.CTkFrame):
             hover_color=("gray65", "gray40"),
             text_color=("gray30", "gray80"),
         )
-        self._detect_btn.grid(row=5, column=0, padx=12, pady=(0, 12), sticky="ew")
+        self._detect_btn.grid(row=5, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        # ── face recognition section ─────────────────────────────────────────
+        ctk.CTkLabel(
+            self,
+            text="Face Recognition",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=6, column=0, padx=14, pady=(6, 2), sticky="ew")
+
+        self._face_btn = ctk.CTkButton(
+            self,
+            text="⬤  Faces: OFF",
+            command=self._on_face_toggle,
+            height=32,
+            fg_color=("gray75", "gray30"),
+            hover_color=("gray65", "gray40"),
+            text_color=("gray30", "gray80"),
+        )
+        self._face_btn.grid(row=7, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        # ── licence plate section ────────────────────────────────────────────
+        ctk.CTkLabel(
+            self,
+            text="Licence Plates",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=8, column=0, padx=14, pady=(6, 2), sticky="ew")
+
+        self._plate_btn = ctk.CTkButton(
+            self,
+            text="⬤  Plates: OFF",
+            command=self._on_plate_toggle,
+            height=32,
+            fg_color=("gray75", "gray30"),
+            hover_color=("gray65", "gray40"),
+            text_color=("gray30", "gray80"),
+        )
+        self._plate_btn.grid(row=9, column=0, padx=12, pady=(0, 12), sticky="ew")
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -159,6 +201,60 @@ class Sidebar(ctk.CTkFrame):
         else:  # off
             self._detect_btn.configure(
                 text="⬤  Detection: OFF",
+                fg_color=("gray75", "gray30"),
+                hover_color=("gray65", "gray40"),
+                text_color=("gray30", "gray80"),
+            )
+
+    def set_face_state(self, state: str) -> None:
+        """
+        Update face recognition button appearance.
+        state: "off" | "loading" | "on"
+        """
+        if state == "on":
+            self._face_btn.configure(
+                text="⬤  Faces: ON",
+                fg_color=("#1a5c7a", "#1a7aaa"),
+                hover_color=("#154d66", "#15638a"),
+                text_color="white",
+            )
+        elif state == "loading":
+            self._face_btn.configure(
+                text="◌  Loading…",
+                fg_color=("#7a6000", "#a07800"),
+                hover_color=("#7a6000", "#a07800"),
+                text_color="white",
+            )
+        else:  # off
+            self._face_btn.configure(
+                text="⬤  Faces: OFF",
+                fg_color=("gray75", "gray30"),
+                hover_color=("gray65", "gray40"),
+                text_color=("gray30", "gray80"),
+            )
+
+    def set_plate_state(self, state: str) -> None:
+        """
+        Update licence plate button appearance.
+        state: "off" | "loading" | "on"
+        """
+        if state == "on":
+            self._plate_btn.configure(
+                text="⬤  Plates: ON",
+                fg_color=("#7a4d00", "#b87000"),
+                hover_color=("#633e00", "#965b00"),
+                text_color="white",
+            )
+        elif state == "loading":
+            self._plate_btn.configure(
+                text="◌  Loading…",
+                fg_color=("#7a6000", "#a07800"),
+                hover_color=("#7a6000", "#a07800"),
+                text_color="white",
+            )
+        else:  # off
+            self._plate_btn.configure(
+                text="⬤  Plates: OFF",
                 fg_color=("gray75", "gray30"),
                 hover_color=("gray65", "gray40"),
                 text_color=("gray30", "gray80"),

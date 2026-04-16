@@ -30,6 +30,8 @@ import customtkinter as ctk
 
 from ..camera_manager import CameraInfo, CameraManager
 from ..detector import ObjectDetector
+from ..face_recognizer import FaceRecognizer
+from ..plate_recognizer import PlateRecognizer
 from ..processors import Pipeline
 from .sidebar import Sidebar
 from .video_panel import VideoPanel
@@ -47,6 +49,8 @@ class MainWindow(ctk.CTk):
         self._camera = CameraManager()
         self._pipeline = Pipeline()
         self._detector = ObjectDetector()
+        self._face_recognizer = FaceRecognizer()
+        self._plate_recognizer = PlateRecognizer()
         self._poll_id: Optional[str] = None
 
         self._build_layout()
@@ -67,6 +71,8 @@ class MainWindow(ctk.CTk):
             on_camera_selected=self._on_camera_selected,
             on_refresh=self._enumerate_cameras,
             on_detection_toggle=self._toggle_detection,
+            on_face_toggle=self._toggle_face,
+            on_plate_toggle=self._toggle_plates,
         )
         self._sidebar.grid(row=0, column=0, padx=(8, 4), pady=8, sticky="ns")
 
@@ -74,6 +80,8 @@ class MainWindow(ctk.CTk):
             self,
             pipeline=self._pipeline,
             detector=self._detector,
+            face_recognizer=self._face_recognizer,
+            plate_recognizer=self._plate_recognizer,
         )
         self._video.grid(row=0, column=1, padx=(4, 8), pady=8, sticky="nsew")
 
@@ -123,6 +131,44 @@ class MainWindow(ctk.CTk):
         """Called on the GUI thread once the model is loaded and running."""
         self._sidebar.set_detection_state("on")
 
+    # ── face recognition toggle ───────────────────────────────────────────────
+
+    def _toggle_face(self) -> None:
+        if self._face_recognizer.loading:
+            return
+
+        if self._face_recognizer.enabled:
+            self._face_recognizer.disable()
+            self._sidebar.set_face_state("off")
+        else:
+            self._sidebar.set_face_state("loading")
+            self._face_recognizer.enable(
+                on_ready=lambda: self.after(0, self._on_face_ready)
+            )
+
+    def _on_face_ready(self) -> None:
+        """Called on the GUI thread once the face recognizer is ready."""
+        self._sidebar.set_face_state("on")
+
+    # ── plate recognition toggle ──────────────────────────────────────────────
+
+    def _toggle_plates(self) -> None:
+        if self._plate_recognizer.loading:
+            return
+
+        if self._plate_recognizer.enabled:
+            self._plate_recognizer.disable()
+            self._sidebar.set_plate_state("off")
+        else:
+            self._sidebar.set_plate_state("loading")
+            self._plate_recognizer.enable(
+                on_ready=lambda: self.after(0, self._on_plates_ready)
+            )
+
+    def _on_plates_ready(self) -> None:
+        """Called on the GUI thread once the plate recognizer is ready."""
+        self._sidebar.set_plate_state("on")
+
     # ── frame poll loop ───────────────────────────────────────────────────────
 
     def _start_poll(self) -> None:
@@ -146,5 +192,7 @@ class MainWindow(ctk.CTk):
         if self._poll_id is not None:
             self.after_cancel(self._poll_id)
         self._detector.disable()
+        self._face_recognizer.disable()
+        self._plate_recognizer.disable()
         self._camera.stop()
         self.destroy()

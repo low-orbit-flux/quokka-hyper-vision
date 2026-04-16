@@ -29,3 +29,8 @@ Thumbs.db
 
 # Logs / temp
 *.log
+
+
+
+# Data
+faces

@@ -14,6 +14,8 @@ A desktop GUI app that lists cameras detected on the system and streams live vid
 | Camera capture | **OpenCV** (`cv2`) | De-facto standard for CV work; same library used for detection |
 | Frame display | **`tk.Canvas` + `ImageTk.PhotoImage`** | `CTkLabel + CTkImage` GCs the PhotoImage between frames at video rates → `TclError: image "pyimageN" doesn't exist`. Canvas + pinned `self._photo` reference is stable |
 | Object detection | **ultralytics YOLOv8n** | Easy API, small model (~6 MB), runs on CPU, works on RPi |
+| Facial recognition | **face_recognition** (dlib) | Simple API; HOG detector fast on CPU; encoding-based identity matching |
+| Licence plates | **OpenCV morphology** + **EasyOCR** | Sobel+close finds plate-shaped regions; EasyOCR reads text; no model download |
 | Inference device | **CPU only** (`device="cpu"`) | GTX 1080 is CUDA sm_61, pip PyTorch only ships sm_75+; CPU is portable and works on RPi |
 | Virtual env | `.venv` at project root | `./run.sh` creates and activates it automatically |
 
@@ -26,14 +28,17 @@ camera1/
 ├── run.sh                  # launcher — creates venv if needed, activates, runs main.py
 ├── main.py                 # entry point
 ├── requirements.txt
+├── faces/                  # known-face images for recognition (see below)
 ├── src/
 │   ├── camera_manager.py   # camera enumeration + threaded capture
 │   ├── processors.py       # CV pipeline (PassThrough by default; add processors here)
 │   ├── detector.py         # YOLOv8n object detector (async, CPU-only)
+│   ├── face_recognizer.py  # dlib face detector + recognizer (async, CPU-only)
+│   ├── plate_recognizer.py # YOLO plate detector + EasyOCR (async, CPU-only)
 │   └── ui/
 │       ├── main_window.py  # root CTk window, poll loop, wires sidebar ↔ video panel
-│       ├── sidebar.py      # left panel: camera list, highlight, refresh, detection toggle
-│       └── video_panel.py  # right panel: tk.Canvas video display + detection overlay
+│       ├── sidebar.py      # left panel: camera list, refresh, detection/face/plate toggles
+│       └── video_panel.py  # right panel: tk.Canvas video display + overlays
 └── rust/                   # original Rust/iced prototype (kept for reference)
     ├── Cargo.toml
     ├── Cargo.lock
@@ -128,9 +133,84 @@ self._pipeline.add(MyProcessor())
 
 ---
 
-## Planned: facial recognition
+## Facial recognition
 
-Will be added as a second toggleable processor/detector alongside object detection. Likely implementation: `face_recognition` library (dlib-based) or OpenCV DNN with a face detection model + embeddings for recognition. Button placement: below the Detection toggle in the sidebar, same pattern.
+- Button: **"⬤  Faces: OFF"** in the sidebar, below Detection
+- **First press** → button turns amber "◌  Loading…" while dlib loads (~1 s)
+- **Model ready** → button turns blue "⬤  Faces: ON"; face boxes drawn on feed
+- **Second press** → inference stops, overlay clears, button goes grey "OFF"
+- Works in two modes automatically:
+  - **Detection-only** (no images in `faces/`) — all faces labelled "Unknown"
+  - **Recognition** — place portrait images in `faces/` named `Alice.jpg`, `Bob.png`, etc. to identify individuals
+
+### Adding known faces
+
+Drop one or more clear portrait images into the `faces/` directory:
+
+```
+faces/
+├── Alice.jpg
+└── Bob.png
+```
+
+The file stem is used as the display name. Re-enable the feature to reload.
+
+### Face recognition architecture (non-blocking)
+
+```
+GUI poll (16 ms)
+  └─ video_panel.push_frame()
+       ├─ face_recognizer.submit(frame)  ← drops if busy (non-blocking)
+       └─ face_recognizer.latest()       ← reads last results (lock-guarded)
+            └─ FaceRecognizer.draw() onto frame copy before display
+
+FaceRecognizer._recognize_loop  (daemon thread)
+  └─ frame scaled to 25% → HOG face detection → dlib encodings → compare
+       └─ coordinates scaled back up; results stored under threading.Lock
+```
+
+---
+
+## Licence plate recognition
+
+- Button: **"⬤  Plates: OFF"** in the sidebar, below Face Recognition
+- **First press** → amber "◌  Loading…" while two models load:
+  - YOLO plate detector (`keremberke/yolov8n-license-plate-detection`, ~6 MB, cached in `~/.cache/huggingface/`)
+  - EasyOCR English model (~100 MB, cached in `~/.EasyOCR/` on first use)
+- **Model ready** → orange "⬤  Plates: ON"; plate boxes + OCR text drawn on feed
+- **Second press** → stops, overlay clears
+
+### Plate recognition architecture
+
+```
+GUI poll (16 ms)
+  └─ video_panel.push_frame()
+       ├─ plate_recognizer.submit(frame)
+       └─ plate_recognizer.latest()
+            └─ PlateRecognizer.draw() onto frame copy
+
+PlateRecognizer._recognize_loop  (daemon thread)
+  ├─ Stage 1 (OpenCV): CLAHE → bilateral blur → Sobel-X → morph close
+  │    → contours filtered by aspect ratio (1.5–7×) and min area
+  └─ Stage 2 (EasyOCR): for each candidate crop:
+       crop → upscale if narrow → readtext → regex filter → PlateMatch
+```
+
+No model download required beyond EasyOCR (~100 MB, downloaded once on first toggle). EasyOCR is the bottleneck (~0.3–1 fps per crop on CPU); the frame-drop queue keeps the video feed unaffected.
+
+### Installation note — dlib
+
+`face-recognition` depends on `dlib` which requires a C++ build toolchain:
+
+```bash
+# Arch Linux
+sudo pacman -S cmake base-devel
+
+# Debian/Ubuntu/Raspberry Pi OS
+sudo apt install cmake build-essential
+```
+
+dlib compiles during `pip install face-recognition` (takes ~2 min on a Pi 4).
 
 ---
 

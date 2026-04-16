@@ -22,6 +22,8 @@ from ..processors import Pipeline
 
 if TYPE_CHECKING:
     from ..detector import ObjectDetector
+    from ..face_recognizer import FaceRecognizer
+    from ..plate_recognizer import PlateRecognizer
 
 _PLACEHOLDER = "← Select a camera to start streaming"
 _PLACEHOLDER_COLOUR = "#6b6b6b"
@@ -33,6 +35,8 @@ class VideoPanel(ctk.CTkFrame):
         master,
         pipeline: Pipeline,
         detector: "ObjectDetector | None" = None,
+        face_recognizer: "FaceRecognizer | None" = None,
+        plate_recognizer: "PlateRecognizer | None" = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("corner_radius", 8)
@@ -40,6 +44,8 @@ class VideoPanel(ctk.CTkFrame):
 
         self._pipeline = pipeline
         self._detector = detector
+        self._face_recognizer = face_recognizer
+        self._plate_recognizer = plate_recognizer
         self._panel_w: int = 1
         self._panel_h: int = 1
         self._photo: ImageTk.PhotoImage | None = None   # MUST stay alive
@@ -89,13 +95,34 @@ class VideoPanel(ctk.CTkFrame):
         # Run through CV processor pipeline (no-op by default).
         frame = self._pipeline.run(bgr_frame)
 
-        # Object detection: submit frame, draw latest results.
+        # Object detection + face recognition: submit, then draw overlays.
+        needs_copy = True
         if self._detector is not None and self._detector.enabled:
             self._detector.submit(frame)
             detections = self._detector.latest()
             if detections:
-                frame = frame.copy()          # don't mutate the original
+                if needs_copy:
+                    frame = frame.copy()
+                    needs_copy = False
                 self._detector.draw(frame, detections)
+
+        if self._face_recognizer is not None and self._face_recognizer.enabled:
+            self._face_recognizer.submit(frame)
+            face_matches = self._face_recognizer.latest()
+            if face_matches:
+                if needs_copy:
+                    frame = frame.copy()
+                    needs_copy = False
+                self._face_recognizer.draw(frame, face_matches)
+
+        if self._plate_recognizer is not None and self._plate_recognizer.enabled:
+            self._plate_recognizer.submit(frame)
+            plates = self._plate_recognizer.latest()
+            if plates:
+                if needs_copy:
+                    frame = frame.copy()
+                    needs_copy = False
+                self._plate_recognizer.draw(frame, plates)
 
         # BGR → RGB, scale to fit panel preserving aspect ratio.
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
