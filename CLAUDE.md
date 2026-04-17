@@ -2,7 +2,7 @@
 
 ## What this project is
 
-A desktop GUI app that lists cameras detected on the system and streams live video from whichever one the user selects. Built to run on Linux, macOS, Windows, and Raspberry Pi. Object detection (YOLOv8n) is implemented and togglable. Facial recognition is planned next.
+A desktop GUI app that lists cameras detected on the system and streams live video from whichever one the user selects. Built to run on Linux, macOS, Windows, and Raspberry Pi. Object detection (YOLO), facial recognition (dlib), and licence plate OCR are all implemented as independent toggleable features.
 
 ---
 
@@ -13,9 +13,9 @@ A desktop GUI app that lists cameras detected on the system and streams live vid
 | GUI | **CustomTkinter** (Python) | Works everywhere including RPi (pure tkinter underneath); modern dark theme; no heavy Qt dependency |
 | Camera capture | **OpenCV** (`cv2`) | De-facto standard for CV work; same library used for detection |
 | Frame display | **`tk.Canvas` + `ImageTk.PhotoImage`** | `CTkLabel + CTkImage` GCs the PhotoImage between frames at video rates → `TclError: image "pyimageN" doesn't exist`. Canvas + pinned `self._photo` reference is stable |
-| Object detection | **ultralytics YOLOv8n** | Easy API, small model (~6 MB), runs on CPU, works on RPi |
+| Object detection | **ultralytics YOLO** (selectable model) | Easy API; three models selectable from sidebar (see below) |
 | Facial recognition | **face_recognition** (dlib) | Simple API; HOG detector fast on CPU; encoding-based identity matching |
-| Licence plates | **OpenCV morphology** + **EasyOCR** | Sobel+close finds plate-shaped regions; EasyOCR reads text; no model download |
+| Licence plates | **OpenCV morphology** + **EasyOCR** | Sobel+close finds plate-shaped regions; EasyOCR reads text; no model download beyond EasyOCR itself |
 | Inference device | **CPU only** (`device="cpu"`) | GTX 1080 is CUDA sm_61, pip PyTorch only ships sm_75+; CPU is portable and works on RPi |
 | Virtual env | `.venv` at project root | `./run.sh` creates and activates it automatically |
 
@@ -32,9 +32,9 @@ camera1/
 ├── src/
 │   ├── camera_manager.py   # camera enumeration + threaded capture
 │   ├── processors.py       # CV pipeline (PassThrough by default; add processors here)
-│   ├── detector.py         # YOLOv8n object detector (async, CPU-only)
+│   ├── detector.py         # YOLO object detector (async, CPU-only, selectable model)
 │   ├── face_recognizer.py  # dlib face detector + recognizer (async, CPU-only)
-│   ├── plate_recognizer.py # YOLO plate detector + EasyOCR (async, CPU-only)
+│   ├── plate_recognizer.py # OpenCV morphology + EasyOCR (async, CPU-only)
 │   └── ui/
 │       ├── main_window.py  # root CTk window, poll loop, wires sidebar ↔ video panel
 │       ├── sidebar.py      # left panel: camera list, refresh, detection/face/plate toggles
@@ -63,11 +63,20 @@ The script:
 
 ## Object detection
 
-- Button: **"⬤  Detection: OFF"** in the sidebar, below Refresh
-- **First press** → button turns amber "◌  Loading model…" while YOLOv8n loads (~6 MB, downloaded once to `~/.config/Ultralytics/`)
+Three models are selectable from the sidebar segmented button (only when detection is OFF):
+
+| Label | Model file | Classes | Size | Notes |
+|---|---|---|---|---|
+| **Fast** | `yolov8n.pt` | 80 COCO | ~6 MB | Fastest; good for RPi |
+| **Balanced** | `yolov8s.pt` | 80 COCO | ~22 MB | Default; mAP +7 pp vs nano |
+| **600+ types** | `yolov8n-oiv7.pt` | 601 Open Images | ~6 MB | Many more object categories |
+
+All models download automatically to `~/.config/Ultralytics/` on first use. Switching models while detection is OFF discards the old model and reloads on next enable.
+
+- **First press** → button turns amber "◌  Loading…" while model loads
 - **Model ready** → button turns green "⬤  Detection: ON"; coloured bounding boxes + labels drawn on feed
 - **Second press** → inference stops, overlay clears, button goes grey "OFF"
-- Model stays in memory once loaded; subsequent toggles are instant
+- Confidence threshold: 0.35 (slightly permissive to match larger models)
 
 ### Detection architecture (non-blocking)
 
@@ -112,6 +121,21 @@ The pip-distributed PyTorch (ultralytics dependency) ships kernels for sm_75+ on
 
 **Fix:** Set `CUDA_VISIBLE_DEVICES=""` before torch imports (hides all GPUs, eliminates warning spam) and pass `device="cpu"` to both `model.to()` and `model.predict()`. CPU inference is portable and fast enough for preview.
 
+### 6 — EasyOCR emits `pkg_resources` DeprecationWarning on import
+EasyOCR uses the legacy `pkg_resources` API internally, printing a deprecation warning to stdout on every import.
+
+**Fix:** Wrap the `import easyocr` in `warnings.catch_warnings()` with `filterwarnings("ignore", category=DeprecationWarning)` in `plate_recognizer._load_and_start()`.
+
+### 7 — HuggingFace `keremberke/yolov8n-license-plate-detection` requires auth
+The original plate detection approach used `hf_hub_download` to fetch a YOLO plate model from HuggingFace, which returns 401 Unauthorized for unauthenticated users.
+
+**Fix:** Replaced with a model-free OpenCV morphological approach (Sobel-X + horizontal morph close) for plate region detection. No model download needed beyond EasyOCR.
+
+### 8 — dlib HOG misses faces in lower-resolution or off-angle photos
+`face_recognition.face_encodings(img)` uses 1× upsampling by default, which silently skips faces in smaller or slightly tilted portrait images (logging "No face found — skipped").
+
+**Fix:** The known-face loader in `face_recognizer._load_and_start()` retries with `number_of_times_to_upsample=2` before giving up. 2× upsampling catches most real-world portraits at the cost of ~4× more CPU for the one-time load step.
+
 ---
 
 ## Adding CV processors (pipeline hook)
@@ -153,7 +177,7 @@ faces/
 └── Bob.png
 ```
 
-The file stem is used as the display name. Re-enable the feature to reload.
+The file stem is used as the display name. Re-enable the feature to reload. If a face isn't found at 1× upsampling, the loader retries at 2× before skipping.
 
 ### Face recognition architecture (non-blocking)
 
@@ -174,9 +198,7 @@ FaceRecognizer._recognize_loop  (daemon thread)
 ## Licence plate recognition
 
 - Button: **"⬤  Plates: OFF"** in the sidebar, below Face Recognition
-- **First press** → amber "◌  Loading…" while two models load:
-  - YOLO plate detector (`keremberke/yolov8n-license-plate-detection`, ~6 MB, cached in `~/.cache/huggingface/`)
-  - EasyOCR English model (~100 MB, cached in `~/.EasyOCR/` on first use)
+- **First press** → amber "◌  Loading…" while EasyOCR loads (~100 MB, cached in `~/.EasyOCR/` on first use)
 - **Model ready** → orange "⬤  Plates: ON"; plate boxes + OCR text drawn on feed
 - **Second press** → stops, overlay clears
 
@@ -190,13 +212,21 @@ GUI poll (16 ms)
             └─ PlateRecognizer.draw() onto frame copy
 
 PlateRecognizer._recognize_loop  (daemon thread)
-  ├─ Stage 1 (OpenCV): CLAHE → bilateral blur → Sobel-X → morph close
-  │    → contours filtered by aspect ratio (1.5–7×) and min area
+  ├─ Stage 1 (OpenCV, no model): run at 100% + 50% scale, merge with NMS
+  │    CLAHE → bilateral blur → Sobel-X → morph close (17×3 kernel)
+  │    → contours filtered by aspect ratio (1.5–7×) and min area (0.2%)
   └─ Stage 2 (EasyOCR): for each candidate crop:
-       crop → upscale if narrow → readtext → regex filter → PlateMatch
+       upscale if <120px wide → CLAHE + sharpen → readtext(allowlist=A-Z0-9)
+       → regex filter (must contain digit, 5–8 chars or split format) → PlateMatch
 ```
 
-No model download required beyond EasyOCR (~100 MB, downloaded once on first toggle). EasyOCR is the bottleneck (~0.3–1 fps per crop on CPU); the frame-drop queue keeps the video feed unaffected.
+Accuracy improvements applied:
+- **`allowlist`** on EasyOCR — only A–Z and 0–9, eliminates punctuation/lowercase misreads
+- **Per-crop CLAHE + sharpening** — normalises contrast on the crop itself before OCR
+- **Multi-scale detection** — runs at both full and half resolution, deduped with IoU NMS
+- **Tighter regex** — requires at least one digit; separates "with-separator" from "no-separator" formats
+
+EasyOCR is the bottleneck (~0.3–1 fps per crop on CPU); the frame-drop queue keeps the video feed unaffected.
 
 ### Installation note — dlib
 
@@ -210,7 +240,7 @@ sudo pacman -S cmake base-devel
 sudo apt install cmake build-essential
 ```
 
-dlib compiles during `pip install face-recognition` (takes ~2 min on a Pi 4).
+dlib compiles during `pip install face-recognition` (takes ~2 min on a Pi 4). `./run.sh` triggers this automatically on first run after the package is added.
 
 ---
 

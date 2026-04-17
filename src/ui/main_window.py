@@ -29,7 +29,7 @@ from typing import Optional
 import customtkinter as ctk
 
 from ..camera_manager import CameraInfo, CameraManager
-from ..detector import ObjectDetector
+from ..detector import MODELS, ObjectDetector
 from ..face_recognizer import FaceRecognizer
 from ..plate_recognizer import PlateRecognizer
 from ..processors import Pipeline
@@ -122,9 +122,11 @@ class MainWindow(ctk.CTk):
             self._detector.disable()
             self._sidebar.set_detection_state("off")
         else:
+            model_name = MODELS[self._sidebar.get_model_key()]
             self._sidebar.set_detection_state("loading")
             self._detector.enable(
-                on_ready=lambda: self.after(0, self._on_detector_ready)
+                model_name=model_name,
+                on_ready=lambda: self.after(0, self._on_detector_ready),
             )
 
     def _on_detector_ready(self) -> None:

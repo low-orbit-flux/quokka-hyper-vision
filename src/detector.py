@@ -1,5 +1,5 @@
 """
-Object detection via YOLOv8n (ultralytics).
+Object detection via ultralytics YOLO.
 
 Architecture
 ------------
@@ -17,15 +17,21 @@ results are available and draws them onto the frame before display.  Because
 inference is slower than the camera frame rate the overlay may lag by a frame
 or two — that is expected and invisible in practice.
 
-Model
------
-YOLOv8n ("nano") is used by default: ~6 MB, runs on CPU, fast enough for
-real-time preview on modern hardware and usable on a Raspberry Pi 4.
-The model file is downloaded to ~/.config/Ultralytics/ on first use.
+Models
+------
+Three models are available, selectable from the sidebar.  All download
+automatically to ~/.config/Ultralytics/ on first use.
+
+  "Fast"        yolov8n.pt       80 COCO classes,  ~6 MB, highest fps
+  "Balanced"    yolov8s.pt       80 COCO classes,  ~22 MB, mAP +7 pp vs nano
+  "601 classes" yolov8n-oiv7.pt  601 Open Images classes, ~6 MB
+
+Switching models while detection is OFF reloads the model on the next enable().
+The previously loaded model is discarded so only one model sits in RAM at a time.
 
 Colors
 ------
-Each COCO class gets a consistent BGR color derived from its index via the
+Each class gets a consistent BGR color derived from its index via the
 golden-ratio hue method so boxes are always visually distinct.
 """
 
@@ -33,6 +39,7 @@ from __future__ import annotations
 
 import colorsys
 import logging
+import os
 import queue
 import threading
 from typing import Callable, Optional
@@ -43,8 +50,16 @@ import numpy as np
 # Silence ultralytics' verbose startup / inference prints.
 logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
-_MODEL_NAME = "yolov8n.pt"
-_CONF_THRESHOLD = 0.40          # ignore detections below this confidence
+# Available models — displayed in the sidebar segmented button.
+# Keys are the UI labels; values are the ultralytics model file names.
+MODELS: dict[str, str] = {
+    "Fast":       "yolov8n.pt",       # 80 COCO classes,  ~6 MB
+    "Balanced":   "yolov8s.pt",       # 80 COCO classes, ~22 MB, better accuracy
+    "600+ types": "yolov8n-oiv7.pt",  # Open Images V7, 601 classes, ~6 MB
+}
+DEFAULT_MODEL_KEY = "Balanced"
+
+_CONF_THRESHOLD = 0.35          # slightly lower than before to match larger model
 _BOX_THICKNESS = 2
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _FONT_SCALE = 0.55
@@ -78,19 +93,20 @@ class Detection:
 
 class ObjectDetector:
     """
-    Wraps YOLOv8n.  Thread-safe; safe to call from the GUI thread.
+    Wraps a YOLO model.  Thread-safe; safe to call from the GUI thread.
 
     Lifecycle
     ---------
-    enable(on_ready)  →  loads model in background, then starts detect thread
-    disable()         →  stops detect thread, clears detections
-    submit(frame)     →  feeds a frame (non-blocking, drops if busy)
-    latest()          →  returns the most recent list[Detection]
-    draw(frame, dets) →  static helper — draws boxes onto a BGR frame in-place
+    enable(model_name, on_ready)  →  loads model in background, starts detect thread
+    disable()                     →  stops detect thread, clears detections
+    submit(frame)                 →  feeds a frame (non-blocking, drops if busy)
+    latest()                      →  returns the most recent list[Detection]
+    draw(frame, dets)             →  static helper — draws boxes onto BGR frame
     """
 
     def __init__(self) -> None:
         self._model = None
+        self._loaded_model_name: Optional[str] = None
         self._enabled: bool = False
         self._loading: bool = False
 
@@ -111,19 +127,30 @@ class ObjectDetector:
     def loading(self) -> bool:
         return self._loading
 
-    def enable(self, on_ready: Optional[Callable[[], None]] = None) -> None:
+    def enable(
+        self,
+        model_name: str = MODELS[DEFAULT_MODEL_KEY],
+        on_ready: Optional[Callable[[], None]] = None,
+    ) -> None:
         """
-        Turn detection on.  If the model hasn't been loaded yet it is
-        downloaded / loaded in a background thread; *on_ready* is called
-        (on that same background thread) when inference is ready.
+        Turn detection on using *model_name*.
+
+        If the requested model is already loaded, inference starts immediately.
+        If a different model was previously loaded it is discarded and the new
+        one is downloaded/loaded in a background thread before inference starts.
+        *on_ready* is called on the background thread when inference is ready.
         """
         if self._enabled:
             return
-        if self._model is None:
+
+        need_load = (self._model is None or self._loaded_model_name != model_name)
+        if need_load:
+            self._model = None
+            self._loaded_model_name = None
             self._loading = True
             threading.Thread(
                 target=self._load_and_start,
-                args=(on_ready,),
+                args=(model_name, on_ready),
                 daemon=True,
             ).start()
         else:
@@ -166,10 +193,8 @@ class ObjectDetector:
         """
         for d in detections:
             color = d.color
-            # Box
             cv2.rectangle(frame, (d.x1, d.y1), (d.x2, d.y2), color, _BOX_THICKNESS)
 
-            # Label background
             label_text = f"{d.label} {d.conf:.0%}"
             (tw, th), baseline = cv2.getTextSize(
                 label_text, _FONT, _FONT_SCALE, _FONT_THICKNESS
@@ -182,8 +207,6 @@ class ObjectDetector:
                 color,
                 cv2.FILLED,
             )
-
-            # Label text (black for contrast)
             cv2.putText(
                 frame,
                 label_text,
@@ -198,17 +221,31 @@ class ObjectDetector:
 
     # ── internal ──────────────────────────────────────────────────────────────
 
-    def _load_and_start(self, on_ready: Optional[Callable[[], None]]) -> None:
+    def _load_and_start(
+        self,
+        model_name: str,
+        on_ready: Optional[Callable[[], None]],
+    ) -> None:
+        import contextlib
+        import io
+
         # Hide all CUDA devices before importing torch so PyTorch doesn't
-        # attempt GPU initialisation at all.  This avoids the "compute
-        # capability not supported" warnings and keeps inference portable
-        # (works unchanged on CPU-only machines and Raspberry Pi).
-        import os
+        # attempt GPU initialisation at all.
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
         from ultralytics import YOLO  # deferred — keeps startup fast
-        self._model = YOLO(_MODEL_NAME)
-        self._model.to("cpu")   # explicit: always run on CPU
+
+        # ultralytics prints a TQDM progress line that includes the download
+        # URL directly to stderr (bypassing Python logging) when it fetches a
+        # model for the first time.  Terminal emulators that auto-detect URLs
+        # in output (Kitty, GNOME Terminal, etc.) open that link in the
+        # browser and trigger a file download.  Redirecting stderr during
+        # YOLO() construction suppresses that output while the model loads.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._model = YOLO(model_name)
+
+        self._model.to("cpu")       # explicit: always run on CPU
+        self._loaded_model_name = model_name
         self._loading = False
         self._start_detect_thread()
         if on_ready:

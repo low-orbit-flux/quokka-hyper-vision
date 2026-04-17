@@ -9,6 +9,7 @@ from typing import Callable
 import customtkinter as ctk
 
 from ..camera_manager import CameraInfo
+from ..detector import DEFAULT_MODEL_KEY, MODELS
 
 
 class Sidebar(ctk.CTkFrame):
@@ -22,7 +23,7 @@ class Sidebar(ctk.CTkFrame):
         on_plate_toggle: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
-        kwargs.setdefault("width", 220)
+        kwargs.setdefault("width", 260)
         kwargs.setdefault("corner_radius", 8)
         super().__init__(master, **kwargs)
 
@@ -66,7 +67,7 @@ class Sidebar(ctk.CTkFrame):
             self,
             text="",
             text_color="gray",
-            wraplength=196,
+            wraplength=234,
             justify="left",
             anchor="w",
             font=ctk.CTkFont(size=12),
@@ -88,6 +89,16 @@ class Sidebar(ctk.CTkFrame):
             anchor="w",
         ).grid(row=4, column=0, padx=14, pady=(10, 2), sticky="ew")
 
+        # Model selector — disabled while detection is running.
+        self._model_selector = ctk.CTkSegmentedButton(
+            self,
+            values=list(MODELS.keys()),
+            height=28,
+            font=ctk.CTkFont(size=12),
+        )
+        self._model_selector.set(DEFAULT_MODEL_KEY)
+        self._model_selector.grid(row=5, column=0, padx=12, pady=(0, 6), sticky="ew")
+
         self._detect_btn = ctk.CTkButton(
             self,
             text="⬤  Detection: OFF",
@@ -97,7 +108,7 @@ class Sidebar(ctk.CTkFrame):
             hover_color=("gray65", "gray40"),
             text_color=("gray30", "gray80"),
         )
-        self._detect_btn.grid(row=5, column=0, padx=12, pady=(0, 8), sticky="ew")
+        self._detect_btn.grid(row=6, column=0, padx=12, pady=(0, 8), sticky="ew")
 
         # ── face recognition section ─────────────────────────────────────────
         ctk.CTkLabel(
@@ -105,7 +116,7 @@ class Sidebar(ctk.CTkFrame):
             text="Face Recognition",
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
-        ).grid(row=6, column=0, padx=14, pady=(6, 2), sticky="ew")
+        ).grid(row=7, column=0, padx=14, pady=(6, 2), sticky="ew")
 
         self._face_btn = ctk.CTkButton(
             self,
@@ -116,7 +127,7 @@ class Sidebar(ctk.CTkFrame):
             hover_color=("gray65", "gray40"),
             text_color=("gray30", "gray80"),
         )
-        self._face_btn.grid(row=7, column=0, padx=12, pady=(0, 8), sticky="ew")
+        self._face_btn.grid(row=8, column=0, padx=12, pady=(0, 8), sticky="ew")
 
         # ── licence plate section ────────────────────────────────────────────
         ctk.CTkLabel(
@@ -124,7 +135,7 @@ class Sidebar(ctk.CTkFrame):
             text="Licence Plates",
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
-        ).grid(row=8, column=0, padx=14, pady=(6, 2), sticky="ew")
+        ).grid(row=9, column=0, padx=14, pady=(6, 2), sticky="ew")
 
         self._plate_btn = ctk.CTkButton(
             self,
@@ -135,7 +146,7 @@ class Sidebar(ctk.CTkFrame):
             hover_color=("gray65", "gray40"),
             text_color=("gray30", "gray80"),
         )
-        self._plate_btn.grid(row=9, column=0, padx=12, pady=(0, 12), sticky="ew")
+        self._plate_btn.grid(row=10, column=0, padx=12, pady=(0, 12), sticky="ew")
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -144,7 +155,6 @@ class Sidebar(ctk.CTkFrame):
 
     def show_cameras(self, cameras: list[CameraInfo]) -> None:
         """Rebuild the camera button list."""
-        # clear old buttons
         for _, btn in self._buttons:
             btn.destroy()
         self._buttons.clear()
@@ -179,9 +189,13 @@ class Sidebar(ctk.CTkFrame):
             else:
                 btn.configure(fg_color="transparent", border_width=1)
 
+    def get_model_key(self) -> str:
+        """Return the currently selected model key (e.g. 'Balanced')."""
+        return self._model_selector.get()
+
     def set_detection_state(self, state: str) -> None:
         """
-        Update detection button appearance.
+        Update detection button appearance and lock/unlock model selector.
         state: "off" | "loading" | "on"
         """
         if state == "on":
@@ -191,13 +205,15 @@ class Sidebar(ctk.CTkFrame):
                 hover_color=("#255525", "#257025"),
                 text_color="white",
             )
+            self._model_selector.configure(state="disabled")
         elif state == "loading":
             self._detect_btn.configure(
-                text="◌  Loading model…",
+                text="◌  Loading…",
                 fg_color=("#7a6000", "#a07800"),
                 hover_color=("#7a6000", "#a07800"),
                 text_color="white",
             )
+            self._model_selector.configure(state="disabled")
         else:  # off
             self._detect_btn.configure(
                 text="⬤  Detection: OFF",
@@ -205,6 +221,7 @@ class Sidebar(ctk.CTkFrame):
                 hover_color=("gray65", "gray40"),
                 text_color=("gray30", "gray80"),
             )
+            self._model_selector.configure(state="normal")
 
     def set_face_state(self, state: str) -> None:
         """

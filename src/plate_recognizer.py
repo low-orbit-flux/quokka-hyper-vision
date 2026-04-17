@@ -15,11 +15,14 @@ Two-stage pipeline, no external model downloads required:
 Stage 1 — detection (OpenCV morphology, no model download)
     Sobel-X edges highlight vertical strokes (character boundaries).
     A morphological close merges those strokes into plate-shaped blobs.
-    Contours are filtered by aspect ratio (1.5–7×) and minimum area.
+    Run at two scales (100 % + 50 %) and merged with NMS so both close
+    and far-away plates are found.
 
 Stage 2 — OCR (EasyOCR, models downloaded once to ~/.EasyOCR/)
-    Each candidate crop is upscaled if narrow, then read with EasyOCR.
-    Results are filtered to alphanumeric plate-like strings (4–12 chars).
+    Each candidate crop is contrast-normalised, sharpened, then read by
+    EasyOCR with an alphanumeric-only allowlist so it can't emit
+    punctuation or lowercase.  Results are filtered by a regex that
+    requires at least one digit.
 
 Both stages run on CPU only.
 """
@@ -41,11 +44,23 @@ _OCR_CONF = 0.35        # discard EasyOCR results below this confidence
 _MIN_AREA_FRAC = 0.002  # plate must be ≥0.2 % of frame area
 _ASPECT_LO = 1.5        # plate width/height lower bound
 _ASPECT_HI = 7.0        # plate width/height upper bound
-_MAX_CANDIDATES = 10    # process at most this many regions per frame
+_MAX_CANDIDATES = 10    # process at most this many regions per frame (per scale)
+_NMS_IOU = 0.3          # IoU threshold for deduplicating multi-scale candidates
 
-# Plate text: 4–12 chars, mostly uppercase letters and digits, one optional
-# separator (space or hyphen) — covers most North American and European formats.
-_PLATE_RE = re.compile(r'^[A-Z0-9]{2,6}[\s\-]?[A-Z0-9]{2,6}$')
+_OCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+# Must contain at least one digit, then either:
+#   - "AB 1234" / "ABC-12" style (2–4 chars, separator, 2–4 chars), or
+#   - "ABC1234" / "1ABC234" style (5–8 chars with no separator)
+_PLATE_RE = re.compile(
+    r'^(?=.*\d)'
+    r'(?:'
+    r'[A-Z0-9]{2,4}[\s\-][A-Z0-9]{2,4}'
+    r'|[A-Z0-9]{5,8}'
+    r')$'
+)
+
+_SHARPEN_KERNEL = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
 
 _BOX_THICKNESS = 2
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -54,6 +69,33 @@ _FONT_THICKNESS = 1
 _PLATE_COLOR = (0, 200, 255)    # orange (BGR)
 
 _LOG = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+
+def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    """Intersection-over-union of two (x1,y1,x2,y2) boxes."""
+    ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (area_a + area_b - inter)
+
+
+def _nms(
+    boxes: list[tuple[int, int, int, int]],
+    iou_threshold: float = _NMS_IOU,
+) -> list[tuple[int, int, int, int]]:
+    """Greedy NMS: keep the larger box when two overlap above *iou_threshold*."""
+    boxes = sorted(boxes, key=lambda b: (b[2]-b[0])*(b[3]-b[1]), reverse=True)
+    kept: list[tuple[int, int, int, int]] = []
+    for box in boxes:
+        if all(_iou(box, k) < iou_threshold for k in kept):
+            kept.append(box)
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +124,8 @@ class PlateRecognizer:
     """
 
     def __init__(self) -> None:
-        self._reader = None         # EasyOCR Reader
+        self._reader = None
+        self._crop_clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
         self._enabled: bool = False
         self._loading: bool = False
 
@@ -262,6 +305,19 @@ class PlateRecognizer:
 
     # ── Stage 2: OCR + filter ─────────────────────────────────────────────────
 
+    def _preprocess_crop(self, crop: np.ndarray) -> np.ndarray:
+        """
+        Prepare a plate crop for EasyOCR:
+        1. Grayscale.
+        2. CLAHE — normalises contrast on the crop itself (different
+           lighting from the scene-level CLAHE used in detection).
+        3. Sharpen — crisper character edges → better OCR.
+        """
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        gray = self._crop_clahe.apply(gray)
+        gray = cv2.filter2D(gray, -1, _SHARPEN_KERNEL)
+        return gray
+
     def _recognize_loop(self) -> None:
         while not self._stop.is_set():
             try:
@@ -269,7 +325,12 @@ class PlateRecognizer:
             except queue.Empty:
                 continue
 
+            # Multi-scale detection: run at 100 % and 50 %, merge with NMS.
             candidates = self._find_candidates(frame)
+            small = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+            for x1, y1, x2, y2 in self._find_candidates(small):
+                candidates.append((x1 * 2, y1 * 2, x2 * 2, y2 * 2))
+            candidates = _nms(candidates)
 
             plates: list[PlateMatch] = []
             for x1, y1, x2, y2 in candidates:
@@ -286,8 +347,13 @@ class PlateRecognizer:
                         interpolation=cv2.INTER_CUBIC,
                     )
 
-                rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                raw = self._reader.readtext(rgb, detail=1, paragraph=False)
+                processed = self._preprocess_crop(crop)
+                raw = self._reader.readtext(
+                    processed,
+                    detail=1,
+                    paragraph=False,
+                    allowlist=_OCR_ALLOWLIST,
+                )
 
                 # Collect text fragments that pass confidence threshold.
                 fragments = [
