@@ -21,6 +21,8 @@ class Sidebar(ctk.CTkFrame):
         on_detection_toggle: Callable[[], None] | None = None,
         on_face_toggle: Callable[[], None] | None = None,
         on_plate_toggle: Callable[[], None] | None = None,
+        on_stream_toggle: Callable[[], None] | None = None,
+        on_add_agent: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("width", 260)
@@ -32,6 +34,8 @@ class Sidebar(ctk.CTkFrame):
         self._on_detection_toggle = on_detection_toggle
         self._on_face_toggle = on_face_toggle
         self._on_plate_toggle = on_plate_toggle
+        self._on_stream_toggle = on_stream_toggle
+        self._on_add_agent = on_add_agent
         self._buttons: list[tuple[CameraInfo, ctk.CTkButton]] = []
         self._selected_index: int | None = None
 
@@ -74,12 +78,27 @@ class Sidebar(ctk.CTkFrame):
         )
         self._status.grid(row=2, column=0, padx=14, pady=(2, 2), sticky="ew")
 
+        _btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        _btn_row.grid(row=3, column=0, padx=12, pady=(4, 4), sticky="ew")
+        _btn_row.grid_columnconfigure(0, weight=1)
+        _btn_row.grid_columnconfigure(1, weight=0)
+
         ctk.CTkButton(
-            self,
+            _btn_row,
             text="Refresh",
             command=self._on_refresh,
             height=32,
-        ).grid(row=3, column=0, padx=12, pady=(4, 4), sticky="ew")
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        ctk.CTkButton(
+            _btn_row,
+            text="＋ Add",
+            command=self._on_add_agent,
+            height=32,
+            width=70,
+            fg_color=("gray65", "gray35"),
+            hover_color=("gray55", "gray45"),
+        ).grid(row=0, column=1, sticky="ew")
 
         # ── detection section ────────────────────────────────────────────────
         ctk.CTkLabel(
@@ -146,7 +165,37 @@ class Sidebar(ctk.CTkFrame):
             hover_color=("gray65", "gray40"),
             text_color=("gray30", "gray80"),
         )
-        self._plate_btn.grid(row=10, column=0, padx=12, pady=(0, 12), sticky="ew")
+        self._plate_btn.grid(row=10, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        # ── stream server section ─────────────────────────────────────────────
+        ctk.CTkLabel(
+            self,
+            text="Stream Server",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=11, column=0, padx=14, pady=(6, 2), sticky="ew")
+
+        self._stream_url_label = ctk.CTkLabel(
+            self,
+            text="",
+            text_color="#5aaaff",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            wraplength=234,
+        )
+        self._stream_url_label.grid(row=12, column=0, padx=14, pady=(0, 2), sticky="ew")
+        self._stream_url_label.grid_remove()   # hidden until server is on
+
+        self._stream_btn = ctk.CTkButton(
+            self,
+            text="⬤  Stream: OFF",
+            command=self._on_stream_toggle,
+            height=32,
+            fg_color=("gray75", "gray30"),
+            hover_color=("gray65", "gray40"),
+            text_color=("gray30", "gray80"),
+        )
+        self._stream_btn.grid(row=13, column=0, padx=12, pady=(0, 12), sticky="ew")
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -276,6 +325,40 @@ class Sidebar(ctk.CTkFrame):
                 hover_color=("gray65", "gray40"),
                 text_color=("gray30", "gray80"),
             )
+
+    def set_stream_state(self, state: str) -> None:
+        """
+        Update stream server button appearance.
+        state: "off" | "starting" | "on"
+        """
+        if state == "on":
+            self._stream_btn.configure(
+                text="⬤  Stream: ON",
+                fg_color=("#005f5f", "#007a7a"),
+                hover_color=("#004d4d", "#006363"),
+                text_color="white",
+            )
+        elif state == "starting":
+            self._stream_btn.configure(
+                text="◌  Starting…",
+                fg_color=("#7a6000", "#a07800"),
+                hover_color=("#7a6000", "#a07800"),
+                text_color="white",
+            )
+            self._stream_url_label.grid_remove()
+        else:  # off
+            self._stream_btn.configure(
+                text="⬤  Stream: OFF",
+                fg_color=("gray75", "gray30"),
+                hover_color=("gray65", "gray40"),
+                text_color=("gray30", "gray80"),
+            )
+            self._stream_url_label.grid_remove()
+
+    def set_stream_url(self, url: str) -> None:
+        """Show the server URL below the stream button."""
+        self._stream_url_label.configure(text=url)
+        self._stream_url_label.grid()
 
     # ── internal ──────────────────────────────────────────────────────────────
 

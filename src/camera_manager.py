@@ -90,6 +90,7 @@ def _can_capture(index: int) -> bool:
 class CameraInfo:
     index: int
     name: str
+    url: Optional[str] = None   # set for remote (agent) cameras; None for local
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +163,21 @@ class CameraManager:
         )
         self._thread.start()
 
+    def start_remote(self, url: str) -> None:
+        """Open a remote MJPEG stream URL and begin capturing frames."""
+        self.stop()
+        self.current_index = None
+        self._stop_event.clear()
+        while not self._frame_queue.empty():
+            try:
+                self._frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._thread = threading.Thread(
+            target=self._capture_remote_loop, args=(url,), daemon=True
+        )
+        self._thread.start()
+
     def stop(self) -> None:
         """Signal the capture thread to stop and wait for it."""
         self._stop_event.set()
@@ -192,6 +208,24 @@ class CameraManager:
                 if not ret:
                     break
                 # Drop the oldest frame when the GUI is running behind.
+                if self._frame_queue.full():
+                    try:
+                        self._frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                self._frame_queue.put(frame)
+        finally:
+            cap.release()
+
+    def _capture_remote_loop(self, url: str) -> None:
+        cap = cv2.VideoCapture(url)
+        if not cap.isOpened():
+            return
+        try:
+            while not self._stop_event.is_set():
+                ret, frame = cap.read()
+                if not ret:
+                    break
                 if self._frame_queue.full():
                     try:
                         self._frame_queue.get_nowait()
