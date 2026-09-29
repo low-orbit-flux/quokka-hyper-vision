@@ -34,3 +34,6 @@ Thumbs.db
 
 # Data
 faces
+
+# YOLO weights (auto-downloaded by ultralytics on first use)
+*.pt
